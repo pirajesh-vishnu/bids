@@ -1,0 +1,189 @@
+using System;
+using System.Data;
+using System.Net;
+using System.Xml;
+using Microsoft.VisualBasic.FileIO;
+using Microsoft.SqlServer.Server;
+
+public static class ClsScrapRaffleNumbers
+{
+    public static void fnScrapRaffleNumbers(string url,string DrawNumber, string filePath,out string stroutput)
+    {
+
+        string runMode = "Live";
+        try
+        {
+            WebClient client = new WebClient();
+            ServicePointManager.Expect100Continue = true;
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Ssl3;
+            String htmlCode = client.DownloadString(url);
+            if (runMode == "Demo")
+            {
+                SqlContext.Pipe.Send("Step1: download url");
+            }
+            if (htmlCode != string.Empty)
+            {               
+                int stringlen = 0;
+                string newUrl = "";
+                string productname = "";
+                string[] urlsplit = url.Split('/');
+                if (urlsplit.Length > 0)
+                {
+                    productname = urlsplit[4].ToString();
+                }
+
+                //get downloadurl
+                int startpos = htmlCode.IndexOf("<a href=\"/results/" + productname + "/draw-history/csv\"");//16590
+                int endpos = htmlCode.IndexOf("id=\"download_history_action\"");//16639
+                stringlen = endpos - startpos;
+                string Substrurl = htmlCode.Substring(startpos, stringlen);//<a href="/results/euromillions/draw-history/csv" 
+                string[] spitSubstrurl = Substrurl.Split(new string[] { "=" }, StringSplitOptions.None);
+                if (spitSubstrurl.Length > 0)
+                {
+                    newUrl = spitSubstrurl[1].Trim();
+                    newUrl = newUrl.Trim('"');
+                }
+                newUrl = url.Split('/')[0] + "//" + url.Split('/')[2] + newUrl;
+                //End downloadurl
+
+                if (runMode == "Demo")
+                {
+                    SqlContext.Pipe.Send("Step2: download csv file url:"+newUrl);
+                }
+              
+                //start download file
+                int converTime;
+                converTime = (Int32)(DateTime.UtcNow.Subtract(new DateTime(1970, 1, 1))).TotalSeconds;
+                string timeStamp = Convert.ToInt32(converTime).ToString();
+                filePath = filePath + productname + "drawhistory_" + timeStamp + ".csv";
+                try
+                {
+                    client.DownloadFile(newUrl, filePath);
+                    if (runMode == "Demo")
+                    {
+                        SqlContext.Pipe.Send("Step3: download csv file path:" + filePath);
+                    }
+                   
+                }
+                catch (Exception exp)
+                {
+                   
+                    if (runMode == "Demo")
+                    {
+                        SqlContext.Pipe.Send("Step3: download csv file error ");
+                    }
+                    stroutput = "<XMLRaffle><Error>Error:" + exp.Message + "</Error></XMLRaffle>";
+                }
+
+                //end downloadfile
+
+                DataTable dt = GetDataTabletFromCSVFile(filePath);
+
+                if (runMode == "Demo")
+                {
+                    SqlContext.Pipe.Send("Step4: Get data from function");
+                }
+                DataRow[] dtRwRafl = dt.Select("DrawNumber ='" + DrawNumber + "'");
+                stroutput = "<XMLRaffle>";
+                if (productname == "lotto")
+                {
+                    foreach (DataRow row in dtRwRafl)
+                    {
+                        string RafflesNumbers = "";
+                        string[] SplitRafflesNumbers = row["Raffles"].ToString().Split(',');
+                        if (SplitRafflesNumbers.Length > 0)
+                        {
+                            RafflesNumbers = SplitRafflesNumbers[0];
+                        }
+
+                        stroutput += "<number><Rafflenumber>" + RafflesNumbers + "</Rafflenumber></number>";
+                    }
+                }
+                else if (productname == "euromillions")
+                {
+                    foreach (DataRow row in dtRwRafl)
+                    {
+                        string RafflesNumbers = "";
+                        string[] SplitRafflesNumbers = row["Raffle"].ToString().Split(',');
+                        if (SplitRafflesNumbers.Length > 0)
+                        {
+                            RafflesNumbers = SplitRafflesNumbers[0];
+                        }
+
+                        stroutput += "<number><Rafflenumber>" + RafflesNumbers + "</Rafflenumber></number>";
+                    }
+                }
+                stroutput += "</XMLRaffle>";
+                if (runMode == "Demo")
+                {
+                    SqlContext.Pipe.Send("Step5:completed");
+                }
+                
+            }
+            else if (htmlCode.Contains("There has been an error while processing your request"))
+            {
+                if (runMode == "Demo")
+                {
+                    SqlContext.Pipe.Send("download url error");
+                }
+                stroutput = "<XMLRaffle><Error>Error: Invalid URL</Error></XMLRaffle>";
+            }
+            else
+            {
+                if (runMode == "Demo")
+                {
+                    SqlContext.Pipe.Send("download url error");
+                }
+              
+                stroutput = "<XMLRaffle><Error>There is no raffle numbers available</Error></XMLRaffle>";
+            }
+        }
+        catch (Exception exp)
+        {
+            if (runMode == "Demo")
+            {
+                SqlContext.Pipe.Send("Main try block error");
+            }
+           
+            stroutput = "<XMLRaffle><Error>Error:" + exp.Message + "</Error></XMLRaffle>";
+        }
+
+    }
+    private static DataTable GetDataTabletFromCSVFile(string csv_file_path)
+    {
+        DataTable csvData = new DataTable();
+        try
+        {
+            using (TextFieldParser csvReader = new TextFieldParser(csv_file_path))
+            {
+                csvReader.SetDelimiters(new string[] { "," });
+                csvReader.HasFieldsEnclosedInQuotes = true;
+                //read column names
+                string[] colFields = csvReader.ReadFields();
+                foreach (string column in colFields)
+                {
+                    DataColumn datecolumn = new DataColumn(column);
+                    datecolumn.AllowDBNull = true;
+                    csvData.Columns.Add(datecolumn);
+                }
+                while (!csvReader.EndOfData)
+                {
+                    string[] fieldData = csvReader.ReadFields();
+                    //Making empty value as null
+                    for (int i = 0; i < fieldData.Length; i++)
+                    {
+                        if (fieldData[i] == "")
+                        {
+                            fieldData[i] = null;
+                        }
+                    }
+                    csvData.Rows.Add(fieldData);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+        }
+        return csvData;
+    }
+}
